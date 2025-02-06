@@ -19,7 +19,7 @@ public class RaceConditionApplication {
     public static final String CUSTOMER_FIRST_NAME = "İSA";
     private final CreditCardService creditCardService;
     private final CustomerRepository customerRepository;
-    private final static AtomicInteger counter = new AtomicInteger(1); // a global counter
+    private final static AtomicInteger counter = new AtomicInteger(0); // a global counter
 
     @SneakyThrows
     public static void main(String[] args) {
@@ -31,7 +31,7 @@ public class RaceConditionApplication {
     //https://www.baeldung.com/spring-scheduled-tasks
     public void test() throws InterruptedException {
         List<Thread> threads = new ArrayList<>();
-        for (int i = 0; i < 1000; i++) {
+        for (int i = 0; i < 100; i++) {
             Thread thread = createNewTransaction(i);
             threads.add(thread);
             thread.start();
@@ -41,16 +41,17 @@ public class RaceConditionApplication {
         }
 
         customerRepository.findByFirstName(CUSTOMER_FIRST_NAME).ifPresentOrElse((customer) -> {
-            System.out.println("Customer Total Balance: " + customer.getBalance());
+            System.out.println("FINISHED: Total Balance: " + customer.getBalance());
         }, () -> {
             System.out.println("Customer Not Found");
         });
     }
 
-    private Thread createNewTransaction(int amount) {
+    private Thread createNewTransaction(int i) {
+        System.out.println("i: " + i);
         final CreditCardTransaction transaction = new CreditCardTransaction();
-        transaction.setAmount(amount % 2 == 0 ? 1 : -1);
-        transaction.setProductName(amount % 2 == 0 ? "debit" : "credit");
+        transaction.setAmount(1);
+        transaction.setProductName("debit");
         transaction.setCustomerFirstName(CUSTOMER_FIRST_NAME);
         Thread thread = new Thread(() -> {
             try {
@@ -65,7 +66,8 @@ public class RaceConditionApplication {
     }
 
     private static void incrementCounter() {
-        System.out.println("incrementCounter" + Thread.currentThread().getName() + ": " + counter.getAndIncrement());
+        int incrementAndGet = counter.incrementAndGet();
+        System.out.println("incrementCounter" + Thread.currentThread().getName() + ": " + incrementAndGet);
     }
 
     @Bean
@@ -80,7 +82,7 @@ public class RaceConditionApplication {
                 speaker.setId(1l);
                 speaker.setFirstName("İSA");
                 speaker.setLastName("KATIRCI");
-                 customerRepository.save(speaker);
+                customerRepository.save(speaker);
 
             });
         };
