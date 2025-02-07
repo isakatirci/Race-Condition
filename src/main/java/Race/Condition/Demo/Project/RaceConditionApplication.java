@@ -7,13 +7,19 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.EnableRetry;
+import org.springframework.retry.annotation.Recover;
+import org.springframework.retry.annotation.Retryable;
 
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @SpringBootApplication
 @AllArgsConstructor
+@EnableRetry
 public class RaceConditionApplication {
 
     public static final String CUSTOMER_FIRST_NAME = "İSA";
@@ -47,14 +53,14 @@ public class RaceConditionApplication {
         });
     }
 
-    private Thread createNewTransaction(int i) {
-        System.out.println("i: " + i);
+    private Thread createNewTransaction(final int i) {
         final CreditCardTransaction transaction = new CreditCardTransaction();
         transaction.setAmount(1);
         transaction.setProductName("debit");
         transaction.setCustomerFirstName(CUSTOMER_FIRST_NAME);
         Thread thread = new Thread(() -> {
             try {
+                System.out.println("i: " + i);
                 creditCardService.sendTransaction(transaction);
             } catch (Exception e) {
                 incrementCounter();
@@ -64,6 +70,7 @@ public class RaceConditionApplication {
         });
         return thread;
     }
+
 
     private static void incrementCounter() {
         int incrementAndGet = counter.incrementAndGet();

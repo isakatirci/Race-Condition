@@ -2,17 +2,15 @@ package Race.Condition.Demo.Project;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.retry.annotation.Recover;
 import org.springframework.retry.annotation.Retryable;
-import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.sql.SQLException;
-
 @Service
-//@EnableRetry
+@EnableRetry
 //@EnableScheduling
 //@EnableAsync
 @RequiredArgsConstructor
@@ -21,35 +19,41 @@ public class CreditCardService {
     private final HistoryRepository historyRepository;
     private final HistoryService historyService;
 
-
-    // @Transactional(isolation = Isolation.REPEATABLE_READ, timeout = 60)
-    //@Scheduled(fixedDelay = 1000)
-    //@Async
-    //@Transactional(isolation = Isolation.SERIALIZABLE, timeout = 60)
-    //@Retryable(value = org.springframework.dao.CannotAcquireLockException.class, maxAttempts = 5, backoff = @Backoff(delay = 1000), recover = "sendTransactionRecover")
+/*    @Retryable(value = org.springframework.dao.CannotAcquireLockException.class, maxAttempts = 250, backoff = @Backoff(delay = 1000), recover = "sendTransactionRecover")
+    @Transactional(isolation = Isolation.SERIALIZABLE)*/
     public void sendTransaction(CreditCardTransaction transaction) {
-        try {
-            if (transaction.getCustomerFirstName() != null) {
-                customerRepository.findByFirstName(transaction.getCustomerFirstName()).ifPresentOrElse(customer -> {
-                    historyService.saveMessageToHistory(transaction, "RECEIVED");
-                    customer.setBalance(customer.getBalance() + transaction.getAmount());
+        sendTransactionHandle(transaction);
+    }
+
+    private void sendTransactionHandle(CreditCardTransaction transaction) {
+        if (transaction.getCustomerFirstName() != null) {
+            customerRepository.findByFirstName(transaction.getCustomerFirstName()).ifPresentOrElse(customer -> {
+                historyService.saveMessageToHistory(transaction, "RECEIVED");
+                customer.setBalance(customer.getBalance() + transaction.getAmount());
+                try {
                     customerRepository.save(customer);
-                    System.out.printf("The account balance of customer %s has changed: %s%n", customer.getFirstName() + " " + customer.getLastName(), transaction.getAmount());
-                }, () -> {
-                    System.err.printf("Customer with first name %s not found%n", transaction.getCustomerFirstName());
-                    historyService.saveMessageToHistory(transaction, "ORPHANED");
-                });
-            } else {
-                System.err.println("Error during adding transaction, no IDs given%n");
-                historyService.saveMessageToHistory(transaction, "CORRUPTED");
-            }
-        } catch (Exception e) {
-            System.err.println("Error during adding transaction, no IDs given%n");
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+                System.out.printf("The account balance of customer %s has changed: %s%n",
+                        customer.getFirstName() + " " + customer.getLastName(), transaction.getAmount());
+            }, () -> {
+                System.err.printf("Customer with first name %s not found%n", transaction.getCustomerFirstName());
+                historyService.saveMessageToHistory(transaction, "ORPHANED");
+            });
+        } else {
+            System.err.println("Error during adding transaction, no IDs given");
+            historyService.saveMessageToHistory(transaction, "CORRUPTED");
         }
     }
 
     @Recover
-    public void sendTransactionRecover(CreditCardTransaction transaction) {
-        System.err.println("Error during adding transaction, no IDs given%n");
+    public void sendTransactionRecover(Exception exception, CreditCardTransaction transaction) {
+        try {
+            sendTransactionHandle(transaction);
+        } catch (Exception e) {
+            System.out.println("sendTransactionRecover has error. class name:" + e.getClass().getName() + " ERROR!!!" + e.getMessage());
+        }
     }
+
 }
