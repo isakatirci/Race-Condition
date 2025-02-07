@@ -11,6 +11,8 @@ import lombok.NoArgsConstructor;
 
 @Data
 @Builder
+@AllArgsConstructor
+@NoArgsConstructor
 public class CreditCardTransaction {
     private Long id;
     private int amount;
