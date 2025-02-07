@@ -46,6 +46,8 @@ public class RaceConditionApplication {
             thread.join();
         }
 
+        System.out.println("incrementCounter" + Thread.currentThread().getName() + ": " + counter.get());
+
         customerRepository.findByFirstName(CUSTOMER_FIRST_NAME).ifPresentOrElse((customer) -> {
             System.out.println("FINISHED: Total Balance: " + customer.getBalance());
         }, () -> {
