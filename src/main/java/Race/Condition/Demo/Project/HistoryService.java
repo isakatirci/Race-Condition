@@ -10,7 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class HistoryService {
     private final HistoryRepository historyRepository;
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW, timeout = 1)
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void saveMessageToHistory(CreditCardTransaction expenditure, String status) {
         try {
             historyRepository.save(History.builder()

@@ -19,7 +19,7 @@ public class CreditCardService {
     private final HistoryRepository historyRepository;
     private final HistoryService historyService;
 
-    @Retryable(value = org.springframework.dao.CannotAcquireLockException.class, maxAttempts = 250, backoff = @Backoff(delay = 1000), recover = "sendTransactionRecover")
+    @Retryable(value = org.springframework.dao.CannotAcquireLockException.class, maxAttempts = 5, backoff = @Backoff(delay = 1000), recover = "sendTransactionRecover")
     @Transactional(isolation = Isolation.SERIALIZABLE)
     public void sendTransaction(CreditCardTransaction transaction) {
         sendTransactionHandle(transaction);
@@ -58,4 +58,49 @@ public class CreditCardService {
 
 }
 
-//http://localhost:8080/h2-console/login.do?jsessionid=fe82cff5d8d5dc81b2c2c20f41d05e07#
+//http://localhost:8080/h2-console
+/*
+
+Parametrelerin Anlamı:
+
+value:
+
+Hangi istisna (exception) türünde yeniden deneme yapılacağını belirtir.
+Bu örnekte, CannotAcquireLockException fırlatıldığında metot yeniden çalıştırılacaktır.
+Birden fazla istisna belirtmek isterseniz, bir dizi (array) kullanabilirsiniz:
+java
+@Retryable(value = {IOException.class, CannotAcquireLockException.class})
+
+maxAttempts:
+
+Yeniden deneme sayısını belirtir (ilk deneme dahil).
+Bu örnekte, metot toplamda 5 kez çalıştırılacaktır (1 normal deneme + 4 yeniden deneme).
+Eğer belirtilen istisna 5 denemeden sonra hâlâ devam ediyorsa, yeniden deneme işlemi durur ve istisna ya fırlatılır ya da @Recover anotasyonu ile belirtilen kurtarma (recovery) metodu devreye girer.
+
+backoff:
+
+Yeniden denemeler arasındaki bekleme süresini (delay) ayarlar.
+@Backoff anotasyonu ile şu ayarları yapabilirsiniz:
+delay: Yeniden denemeler arasındaki sabit bekleme süresi (milisaniye cinsinden). Bu örnekte, her deneme arasında 1000ms (1 saniye) beklenir.
+multiplier (isteğe bağlı): Üstel (exponential) bekleme süresi için kullanılır. Örneğin:
+java
+@Backoff(delay = 1000, multiplier = 2)
+Bu durumda bekleme süreleri sırasıyla 1 saniye, 2 saniye, 4 saniye, 8 saniye şeklinde artar.
+recover:
+
+Yeniden deneme hakkı tükendiğinde çağrılacak kurtarma (recovery) metodunu belirtir.
+Bu örnekte, sendTransactionRecover metodu, tüm denemeler başarısız olduğunda devreye girer.
+Kurtarma metodunun şu kurallara uyması gerekir:
+İlk parametresi, yakalanan istisna türü olmalıdır.
+@Retryable metodunun parametreleri ile uyumlu olmalıdır.
+
+
+Örnek Akış:
+@Retryable ile işaretlenmiş metot çağrılır.
+Eğer belirtilen istisna (CannotAcquireLockException) fırlatılırsa, Spring Retry mekanizması devreye girer.
+Metot, belirtilen maxAttempts kadar yeniden çalıştırılır (bu örnekte 5 kez).
+Her deneme arasında backoff ile belirtilen süre kadar beklenir (1 saniye).
+Eğer tüm denemeler başarısız olursa, recover ile belirtilen kurtarma metodu çağrılır.
+
+
+* */
