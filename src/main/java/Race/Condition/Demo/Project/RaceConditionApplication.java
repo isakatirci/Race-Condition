@@ -13,6 +13,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
 import org.springframework.retry.annotation.EnableRetry;
 
 import java.util.ArrayList;
@@ -22,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 @SpringBootApplication
 @AllArgsConstructor
 @EnableRetry
+@EnableJpaAuditing
 public class RaceConditionApplication {
 
 	public static final String CUSTOMER_FIRST_NAME = "İSA";
@@ -97,6 +99,12 @@ public class RaceConditionApplication {
 					try {
 						return f.get();
 					} catch (InterruptedException | ExecutionException e) {
+						System.out.println(
+								"supplyAsync: interrupt has error " + e.getClass().getName() + " ERROR!!!" + e.getMessage());
+						throw new RuntimeException(e);
+					} catch (Exception e){
+						System.out.println(
+								"supplyAsync: unknown has error " + e.getClass().getName() + " ERROR!!!" + e.getMessage());
 						throw new RuntimeException(e);
 					}
 				}))
