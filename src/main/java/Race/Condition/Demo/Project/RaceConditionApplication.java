@@ -86,7 +86,7 @@ public class RaceConditionApplication {
 		ArrayList<Future<Integer>> futures = new ArrayList<>();
 
 		ExecutorService executor = Executors.newFixedThreadPool(
-				2//Runtime.getRuntime().availableProcessors()
+				Runtime.getRuntime().availableProcessors()
 		);
 
 		for (int i = 0; i < 100; i++) {
