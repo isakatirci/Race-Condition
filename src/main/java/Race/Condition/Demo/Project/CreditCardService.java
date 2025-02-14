@@ -19,7 +19,7 @@ public class CreditCardService {
     private final HistoryRepository historyRepository;
     private final HistoryService historyService;
 
-    @Retryable(value = org.springframework.dao.CannotAcquireLockException.class, maxAttempts = 5, backoff = @Backoff(delay = 1000), recover = "sendTransactionRecover")
+    @Retryable(value = org.springframework.dao.CannotAcquireLockException.class, maxAttempts = 15, backoff = @Backoff(delay = 1000), recover = "sendTransactionRecover")
     @Transactional(isolation = Isolation.REPEATABLE_READ)
     public void sendTransaction(CreditCardTransaction transaction) {
         sendTransactionHandle(transaction);
