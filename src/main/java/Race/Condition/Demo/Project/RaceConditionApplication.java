@@ -1,5 +1,6 @@
 package Race.Condition.Demo.Project;
 
+import Race.Condition.Demo.Project.transaction.B;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -35,9 +36,10 @@ public class RaceConditionApplication {
 	public static void main(String[] args) {
 		ConfigurableApplicationContext applicationContext = SpringApplication.run(
 				RaceConditionApplication.class, args);
-		RaceConditionApplication application = applicationContext.getBean(
-				RaceConditionApplication.class);
-		application.test2();
+		B b = applicationContext.getBean(B.class);
+		b.testBSave();
+	/*	RaceConditionApplication application = applicationContext.getBean(RaceConditionApplication.class);
+		application.test2();*/
 	}
 
 	//https://www.baeldung.com/spring-scheduled-tasks
@@ -100,11 +102,13 @@ public class RaceConditionApplication {
 						return f.get();
 					} catch (InterruptedException | ExecutionException e) {
 						System.out.println(
-								"supplyAsync: interrupt has error " + e.getClass().getName() + " ERROR!!!" + e.getMessage());
+								"supplyAsync: interrupt has error " + e.getClass().getName()
+										+ " ERROR!!!" + e.getMessage());
 						throw new RuntimeException(e);
-					} catch (Exception e){
+					} catch (Exception e) {
 						System.out.println(
-								"supplyAsync: unknown has error " + e.getClass().getName() + " ERROR!!!" + e.getMessage());
+								"supplyAsync: unknown has error " + e.getClass().getName()
+										+ " ERROR!!!" + e.getMessage());
 						throw new RuntimeException(e);
 					}
 				}))
