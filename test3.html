@@ -1,0 +1,314 @@
+
+```java
+package com.ykb.cosmos.swift.external.soapha.service;
+
+import com.ykb.cosmos.swift.external.soapha.client.SoapHostAdapterClient;
+import com.ykb.cosmos.swift.external.soapha.config.SwiftProperties;
+import com.ykb.cosmos.swift.external.soapha.model.*;
+import com.ykb.cosmos.swift.service.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.w3c.dom.Element;
+
+import java.util.HashMap;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class SoapHostAdapterClientServiceImplMissingCoverageTest {
+
+    @InjectMocks
+    private SoapHostAdapterClientServiceImpl service;
+
+    @Mock
+    private SoapHostAdapterClient soapHostAdapterClient;
+    @Mock
+    private SwiftSoapLogService swiftSoapLogService;
+    @Mock
+    private SwiftProperties swiftProperties;
+    @Mock
+    private SoapHostAdapterServiceJaxbUtil jaxbUtil;
+
+    // Line 144-150: getAck() fault durumu
+    @Test
+    void getAck_WithFault_ShouldReturnFalse() {
+        String sessionToken = "token123";
+        Map<String, Object> results = new HashMap<>();
+        results.put("fault", "error");
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        boolean result = service.getAck(sessionToken);
+
+        assertThat(result).isFalse();
+        verify(swiftSoapLogService).createAckLogFault(anyString(), anyString(), eq(sessionToken));
+    }
+
+    // Line 169-171: getAckError() null sessionToken
+    @Test
+    void getAckError_WithNullSessionToken_ShouldReturn() {
+        service.getAckError(null);
+
+        verifyNoInteractions(soapHostAdapterClient);
+    }
+
+    // Line 178-183: getAckError() fault durumu
+    @Test
+    void getAckError_WithFault_ShouldLogFault() {
+        String sessionToken = "token123";
+        Map<String, Object> results = new HashMap<>();
+        results.put("fault", "error");
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.getAckError(sessionToken);
+
+        verify(swiftSoapLogService).createGetAckLogFault(anyString(), anyString(), eq(sessionToken));
+    }
+
+    // Line 186-195: getAckError() responseDataPDU null durumu
+    @Test
+    void getAckError_WithNullDataPDU_ShouldLogEmpty() {
+        String sessionToken = "token123";
+        GetAckResponse response = new GetAckResponse();
+        response.setAny(null);
+        
+        Map<String, Object> results = new HashMap<>();
+        results.put("body", response);
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.getAckError(sessionToken);
+
+        verify(swiftSoapLogService).createGetAckErrorLogEmpty(anyString(), anyString(), eq(sessionToken));
+    }
+
+    // Line 205-207: getAckAckForCbprMx() null sessionToken
+    @Test
+    void getAckAckForCbprMx_WithNullSessionToken_ShouldReturn() {
+        service.getAckAckForCbprMx(null);
+
+        verifyNoInteractions(soapHostAdapterClient);
+    }
+
+    // Line 216-219: getAckAckForCbprMx() fault durumu
+    @Test
+    void getAckAckForCbprMx_WithFault_ShouldLogFault() {
+        String sessionToken = "token123";
+        Map<String, Object> results = new HashMap<>();
+        results.put("fault", "error");
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.getAckAckForCbprMx(sessionToken);
+
+        verify(swiftSoapLogService).createGetAckLogFault(anyString(), anyString(), eq(sessionToken));
+    }
+
+    // Line 221-224: getAckAckForCbprMx() null DataPDU
+    @Test
+    void getAckAckForCbprMx_WithNullDataPDU_ShouldCallResponseCheck() {
+        String sessionToken = "token123";
+        GetAckResponse response = new GetAckResponse();
+        response.setAny(null);
+        
+        Map<String, Object> results = new HashMap<>();
+        results.put("body", response);
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.getAckAckForCbprMx(sessionToken);
+
+        verify(soapHostAdapterClient).callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any());
+    }
+
+    // Line 243-245: getAckAckForCbprMt() null sessionToken
+    @Test
+    void getAckAckForCbprMt_WithNullSessionToken_ShouldReturn() {
+        service.getAckAckForCbprMt(null);
+
+        verifyNoInteractions(soapHostAdapterClient);
+    }
+
+    // Line 254-257: getAckAckForCbprMt() fault durumu
+    @Test
+    void getAckAckForCbprMt_WithFault_ShouldLogFault() {
+        String sessionToken = "token123";
+        Map<String, Object> results = new HashMap<>();
+        results.put("fault", "error");
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.getAckAckForCbprMt(sessionToken);
+
+        verify(swiftSoapLogService).createGetAckLogFault(anyString(), anyString(), eq(sessionToken));
+    }
+
+    // Line 265-267: getAckNackForCbprMx() null sessionToken
+    @Test
+    void getAckNackForCbprMx_WithNullSessionToken_ShouldReturn() {
+        service.getAckNackForCbprMx(null);
+
+        verifyNoInteractions(soapHostAdapterClient);
+    }
+
+    // Line 276-279: getAckNackForCbprMx() fault durumu
+    @Test
+    void getAckNackForCbprMx_WithFault_ShouldLogFault() {
+        String sessionToken = "token123";
+        Map<String, Object> results = new HashMap<>();
+        results.put("fault", "error");
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.getAckNackForCbprMx(sessionToken);
+
+        verify(swiftSoapLogService).createGetAckLogFault(anyString(), anyString(), eq(sessionToken));
+    }
+
+    // Line 300-302: getAckNack() null sessionToken
+    @Test
+    void getAckNack_WithNullSessionToken_ShouldReturn() {
+        service.getAckNack(null);
+
+        verifyNoInteractions(soapHostAdapterClient);
+    }
+
+    // Line 311-314: getAckNack() fault durumu
+    @Test
+    void getAckNack_WithFault_ShouldLogFault() {
+        String sessionToken = "token123";
+        Map<String, Object> results = new HashMap<>();
+        results.put("fault", "error");
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.getAckNack(sessionToken);
+
+        verify(swiftSoapLogService).createGetAckLogFault(anyString(), anyString(), eq(sessionToken));
+    }
+
+    // Line 317-328: getAckNack() null DataPDU
+    @Test
+    void getAckNack_WithNullDataPDU_ShouldLogEmpty() {
+        String sessionToken = "token123";
+        GetAckResponse response = new GetAckResponse();
+        response.setAny(null);
+        
+        Map<String, Object> results = new HashMap<>();
+        results.put("body", response);
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.getAckNack(sessionToken);
+
+        verify(swiftSoapLogService).createGetAckLogEmpty(anyString(), anyString(), eq(sessionToken));
+    }
+
+    // Line 368-370: getAckOut() null sessionToken
+    @Test
+    void getAckOut_WithNullSessionToken_ShouldReturn() {
+        service.getAckOut(null);
+
+        verifyNoInteractions(soapHostAdapterClient);
+    }
+
+    // Line 378-382: getAckOutForIncoming() fault durumu
+    @Test
+    void getAckOutForIncoming_WithFault_ShouldLogFault() {
+        String sessionToken = "token123";
+        Map<String, Object> results = new HashMap<>();
+        results.put("fault", "error");
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.getAckOutForIncoming(sessionToken);
+
+        verify(swiftSoapLogService).createGetAckLogFault(anyString(), anyString(), eq(sessionToken));
+    }
+
+    // Line 390-393: getAckOutForIncoming() null DataPDU
+    @Test
+    void getAckOutForIncoming_WithNullDataPDU_ShouldLogEmpty() {
+        String sessionToken = "token123";
+        GetAckResponse response = new GetAckResponse();
+        response.setAny(null);
+        
+        Map<String, Object> results = new HashMap<>();
+        results.put("body", response);
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.getAckOutForIncoming(sessionToken);
+
+        verify(swiftSoapLogService).createGetAckLogEmpty(anyString(), anyString(), eq(sessionToken));
+    }
+
+    // Line 503-505: close() null sessionToken
+    @Test
+    void close_WithNullSessionToken_ShouldReturn() {
+        service.close(null);
+
+        verifyNoInteractions(soapHostAdapterClient);
+    }
+
+    // Line 514-518: close() fault durumu
+    @Test
+    void close_WithFault_ShouldLogFault() {
+        String sessionToken = "token123";
+        Map<String, Object> results = new HashMap<>();
+        results.put("fault", "error");
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.close(sessionToken);
+
+        verify(swiftSoapLogService).createCloseLogFault(anyString(), anyString(), eq(sessionToken));
+        verify(swiftSoapLogService).updateOpenLogFault(eq(sessionToken));
+    }
+
+    // Line 520-532: close() success ve unsucess durumları
+    @Test
+    void close_WithSuccess_ShouldLogSuccess() {
+        String sessionToken = "token123";
+        CloseResponse closeResponse = new CloseResponse();
+        Element element = mock(Element.class);
+        closeResponse.setAny(element);
+        
+        DataPDU dataPDU = new DataPDU();
+        Header header = new Header();
+        SessionStatus sessionStatus = new SessionStatus();
+        sessionStatus.setIsSuccess(true);
+        header.setSessionStatus(sessionStatus);
+        dataPDU.setHeader(header);
+        
+        Map<String, Object> results = new HashMap<>();
+        results.put("body", closeResponse);
+        
+        when(soapHostAdapterClient.callWebService(anyString(), any(), eq(sessionToken), anyLong(), any(), any()))
+            .thenReturn(results);
+
+        service.close(sessionToken);
+
+        verify(swiftSoapLogService).updateOpenLogSuccess(eq(sessionToken));
+    }
+}
+```
