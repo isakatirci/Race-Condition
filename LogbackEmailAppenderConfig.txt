@@ -1,0 +1,219 @@
+package com.ykb.cosmos.swift.moneytransfer.logging;
+
+import ch.qos.logback.classic.AsyncAppender;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.Appender;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.event.EventListener;
+import org.springframework.core.annotation.Order;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+
+/**
+ * Configuration class to initialize the EmailErrorAppender with Spring ApplicationContext.
+ * This ensures that the appender can access Spring beans like EmailService.
+ *
+ * <p>The appender is initialized after the application context is fully ready,
+ * ensuring all beans are available for dependency injection.
+ *
+ * <p><b>Features:</b>
+ * <ul>
+ *   <li>Automatic discovery of EmailErrorAppender in logback configuration</li>
+ *   <li>Support for both direct and async-wrapped appenders</li>
+ *   <li>Graceful error handling - failures don't prevent application startup</li>
+ *   <li>Detailed startup logging for troubleshooting</li>
+ * </ul>
+ *
+ * @author YKB Swift Team
+ * @version 2.0.0
+ */
+@Configuration
+public class LogbackEmailAppenderConfig {
+
+    private static final org.slf4j.Logger log = LoggerFactory.getLogger(LogbackEmailAppenderConfig.class);
+
+    private final ApplicationContext applicationContext;
+
+    /**
+     * Constructor with required dependencies.
+     *
+     * @param applicationContext the Spring application context
+     */
+    public LogbackEmailAppenderConfig(ApplicationContext applicationContext) {
+        this.applicationContext = applicationContext;
+    }
+
+    /**
+     * Initialize the EmailErrorAppender with Spring ApplicationContext.
+     * This method is called after the application context is fully initialized.
+     *
+     * <p>Uses @Order to ensure this runs early in the ApplicationReadyEvent handling,
+     * so email notifications are available as soon as possible.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    @Order(0) // Run early
+    public void configureEmailAppender() {
+        log.info("Initializing Email Error Appender configuration...");
+
+        try {
+            LoggerContext loggerContext = getLoggerContext();
+            if (loggerContext == null) {
+                log.warn("Could not obtain LoggerContext - email error notifications may not work");
+                return;
+            }
+
+            List<EmailErrorAppender> configuredAppenders = findAndConfigureAppenders(loggerContext);
+
+            if (configuredAppenders.isEmpty()) {
+                log.info("No EmailErrorAppender found in logback configuration.  " +
+                        "To enable email error notifications, add EmailErrorAppender to logback-spring.xml");
+            } else {
+                logConfigurationSummary(configuredAppenders);
+            }
+
+        } catch (Exception e) {
+            // Log but don't fail - email notifications are non-critical
+            log.warn("Failed to configure EmailErrorAppender:  {}. " +
+                    "Email error notifications will be disabled.", e.getMessage());
+            if (log.isDebugEnabled()) {
+                log.debug("EmailErrorAppender configuration error details:", e);
+            }
+        }
+    }
+
+    /**
+     * Get the LoggerContext from SLF4J.
+     *
+     * @return LoggerContext or null if not available
+     */
+    private LoggerContext getLoggerContext() {
+        var factory = LoggerFactory.getILoggerFactory();
+        if (factory instanceof LoggerContext) {
+            return (LoggerContext) factory;
+        }
+        log.warn("ILoggerFactory is not a LoggerContext (found: {}). " +
+                "Make sure Logback is properly configured.", factory.getClass().getName());
+        return null;
+    }
+
+    /**
+     * Find all EmailErrorAppender instances and inject the ApplicationContext.
+     *
+     * @param loggerContext the Logback logger context
+     * @return list of configured appenders
+     */
+    private List<EmailErrorAppender> findAndConfigureAppenders(LoggerContext loggerContext) {
+        List<EmailErrorAppender> configuredAppenders = new ArrayList<>();
+
+        // Get root logger
+        Logger rootLogger = loggerContext.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+
+        // Iterate through all appenders attached to root logger
+        Iterator<Appender<ILoggingEvent>> appenderIterator = rootLogger.iteratorForAppenders();
+        while (appenderIterator.hasNext()) {
+            Appender<ILoggingEvent> appender = appenderIterator.next();
+            configureAppender(appender, configuredAppenders);
+        }
+
+        // Also check all loggers in context (some appenders might be attached to specific loggers)
+        for (Logger logger : loggerContext.getLoggerList()) {
+            Iterator<Appender<ILoggingEvent>> loggerAppenders = logger.iteratorForAppenders();
+            while (loggerAppenders.hasNext()) {
+                Appender<ILoggingEvent> appender = loggerAppenders.next();
+                // Avoid duplicates
+                if (appender instanceof EmailErrorAppender emailAppender &&
+                        !configuredAppenders.contains(emailAppender)) {
+                    configureEmailAppender(emailAppender, "direct:" + logger.getName());
+                    configuredAppenders.add(emailAppender);
+                }
+            }
+        }
+
+        return configuredAppenders;
+    }
+
+    /**
+     * Configure a single appender, handling both direct and async-wrapped cases.
+     *
+     * @param appender            the appender to configure
+     * @param configuredAppenders list to add configured appenders to
+     */
+    private void configureAppender(Appender<ILoggingEvent> appender, List<EmailErrorAppender> configuredAppenders) {
+        String appenderName = appender.getName();
+
+        // Case 1: Direct EmailErrorAppender
+        if (appender instanceof EmailErrorAppender emailAppender) {
+            if (!configuredAppenders.contains(emailAppender)) {
+                configureEmailAppender(emailAppender, appenderName);
+                configuredAppenders.add(emailAppender);
+            }
+            return;
+        }
+
+        // Case 2: AsyncAppender wrapping EmailErrorAppender
+        if (appender instanceof AsyncAppender asyncAppender) {
+            Iterator<Appender<ILoggingEvent>> innerIterator = asyncAppender.iteratorForAppenders();
+            while (innerIterator.hasNext()) {
+                Appender<ILoggingEvent> innerAppender = innerIterator.next();
+                if (innerAppender instanceof EmailErrorAppender emailAppender) {
+                    if (!configuredAppenders.contains(emailAppender)) {
+                        configureEmailAppender(emailAppender, appenderName + "/" + innerAppender.getName());
+                        configuredAppenders.add(emailAppender);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Inject ApplicationContext into EmailErrorAppender.
+     *
+     * @param appender     the appender to configure
+     * @param appenderPath the path/name for logging purposes
+     */
+    private void configureEmailAppender(EmailErrorAppender appender, String appenderPath) {
+        appender.setApplicationContext(applicationContext);
+        log.debug("Configured EmailErrorAppender:  {}", appenderPath);
+    }
+
+    /**
+     * Log a summary of the configuration.
+     *
+     * @param appenders list of configured appenders
+     */
+    private void logConfigurationSummary(List<EmailErrorAppender> appenders) {
+        log.info("═══════════════════════════════════════════════════════════════");
+        log.info("  Email Error Notification System - ACTIVE");
+        log.info("═══════════════════════════════════════════════════════════════");
+        log.info("  Configured appenders:  {}", appenders.size());
+        log.info("  ");
+        log.info("  Configuration options:");
+        log.info("    • ERROR_EMAIL_RECIPIENT  : Email address for notifications (REQUIRED)");
+        log.info("    • ERROR_EMAIL_ENABLED    : Set to 'false' to disable (default: true)");
+        log.info("  ");
+        log.info("  These can be set as environment variables or system properties:");
+        log.info("    • error.email.recipient");
+        log.info("    • error. email.enabled");
+        log.info("═══════════════════════════════════════════════════════════════");
+
+        // Check if recipient is configured
+        String recipient = System.getProperty("error.email. recipient");
+        if (recipient == null) {
+            recipient = System.getenv("ERROR_EMAIL_RECIPIENT");
+        }
+
+        if (recipient == null || recipient.isBlank()) {
+            log.warn("⚠️  ERROR_EMAIL_RECIPIENT is not configured!  Email notifications are DISABLED.");
+            log.warn("   Set the environment variable or system property to enable notifications.");
+        } else {
+            log.info("✅ Email notifications will be sent to: {}", recipient);
+        }
+    }
+}
