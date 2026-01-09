@@ -1,0 +1,693 @@
+package com.ykb.cosmos.swift.moneytransfer.logging;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.classic.spi.IThrowableProxy;
+import ch.qos.logback.classic.spi.StackTraceElementProxy;
+import ch.qos.logback.core.AppenderBase;
+import com.ykb.cosmos.swift.moneytransfer.external.email.service.EmailService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextAware;
+import org.springframework.lang.NonNull;
+import org.springframework.stereotype.Component;
+
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * Custom Logback appender that intercepts ERROR level logs and sends them via email.
+ * This appender listens to all SLF4J Logger. error() calls and forwards them to EmailService.
+ *
+ * <p><b>Performance & Safety Features:</b>
+ * <ul>
+ *   <li>Cached EmailService bean lookup (no repeated Spring context queries)</li>
+ *   <li>Dedicated bounded thread pool (prevents resource exhaustion)</li>
+ *   <li>Circuit breaker pattern (auto-disable on repeated failures)</li>
+ *   <li>Rate limiting (prevents email flooding)</li>
+ *   <li>Non-blocking async execution (never blocks application threads)</li>
+ *   <li>Transaction-safe (no transaction propagation)</li>
+ *   <li>Full stack trace preservation including caused-by chain</li>
+ * </ul>
+ *
+ * <p><b>Configuration:</b>
+ * <pre>
+ * Environment Variables:
+ *   - ERROR_EMAIL_RECIPIENT: Required.  Email address for error notifications.
+ *   - ERROR_EMAIL_ENABLED: Optional. Set to "false" to disable.  Default: true.
+ *
+ * System Properties:
+ *   - error.email.recipient: Alternative to environment variable.
+ *   - error.email.enabled: Alternative to environment variable.
+ * </pre>
+ *
+ * <p>Configure in logback-spring.xml to use this appender.
+ *
+ * @author YKB Swift Team
+ * @version 2.0.0
+ * @see EmailService#sendEmail(String, String, String)
+ */
+@Component
+public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements ApplicationContextAware {
+
+    // Use stderr for internal logging to avoid recursion
+    private static final Logger INTERNAL_LOGGER = LoggerFactory.getLogger(EmailErrorAppender.class);
+
+    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final String PROPERTY_RECIPIENT = "error. email.recipient";
+    private static final String ENV_RECIPIENT = "ERROR_EMAIL_RECIPIENT";
+    private static final String PROPERTY_ENABLED = "error.email.enabled";
+    private static final String ENV_ENABLED = "ERROR_EMAIL_ENABLED";
+
+    // Logger names to exclude to prevent infinite loops
+    private static final Set<String> EXCLUDED_LOGGER_PREFIXES = Set.of(
+            "com.ykb. cosmos.swift.moneytransfer. external.email",
+            "com.ykb. cosmos.swift.moneytransfer. logging",
+            "org.springframework.mail",
+            "com.sun.mail",
+            "javax.mail"
+    );
+
+    // Spring context - volatile for thread visibility
+    private static volatile ApplicationContext applicationContext;
+
+    // Cached EmailService bean - volatile for double-checked locking
+    private static volatile EmailService cachedEmailService;
+
+    // Flag to prevent repeated bean lookup failures
+    private static volatile boolean beanLookupFailed = false;
+
+    // Cached recipient email - evaluated once
+    private static volatile String cachedRecipientEmail;
+    private static volatile boolean recipientEvaluated = false;
+
+    // Thread pool for async email sending - bounded to prevent resource exhaustion
+    private static final ExecutorService EMAIL_EXECUTOR = createEmailExecutor();
+
+    // Circuit breaker state - using AtomicReference for atomic state updates
+    private static final AtomicReference<CircuitBreakerState> CIRCUIT_BREAKER_STATE =
+            new AtomicReference<>(CircuitBreakerState.closed());
+
+    // Circuit breaker configuration
+    private static final int CIRCUIT_BREAKER_FAILURE_THRESHOLD = 10;
+    private static final long CIRCUIT_BREAKER_RESET_TIME_MS = 300_000L; // 5 minutes
+
+    // Rate limiting - prevent email flooding
+    private static final AtomicLong LAST_EMAIL_TIME = new AtomicLong(0);
+    private static final long MIN_EMAIL_INTERVAL_MS = 1000L; // Max 1 email per second
+
+    // Maximum stack trace depth to prevent extremely long emails
+    private static final int MAX_STACK_TRACE_DEPTH = 100;
+    private static final int MAX_CAUSE_DEPTH = 10;
+
+    /**
+     * Creates a bounded thread pool for async email sending.
+     *
+     * @return configured ExecutorService
+     */
+    private static ExecutorService createEmailExecutor() {
+        ThreadFactory threadFactory = new ThreadFactory() {
+            private final AtomicInteger counter = new AtomicInteger(0);
+
+            @Override
+            public Thread newThread(@NonNull Runnable r) {
+                Thread thread = new Thread(r, "error-email-sender-" + counter.incrementAndGet());
+                thread.setDaemon(true); // Daemon thread - won't prevent JVM shutdown
+                thread.setPriority(Thread.MIN_PRIORITY); // Low priority - don't impact app performance
+                thread.setUncaughtExceptionHandler((t, e) ->
+                        System.err.println("EmailErrorAppender:  Uncaught exception in " + t.getName() + ": " + e.getMessage())
+                );
+                return thread;
+            }
+        };
+
+        return new ThreadPoolExecutor(
+                1,                              // Core pool size
+                3,                              // Max pool size
+                60L, TimeUnit.SECONDS,          // Keep alive time
+                new LinkedBlockingQueue<>(100), // Bounded queue (max 100 pending emails)
+                threadFactory,
+                new ThreadPoolExecutor.DiscardOldestPolicy() // Discard oldest on overflow
+        );
+    }
+
+    /**
+     * Process each logging event.  Only ERROR level logs are sent via email.
+     *
+     * <p><b>CRITICAL:  This method NEVER blocks. </b> All operations are:
+     * <ul>
+     *   <li>Fast pre-checks (nanosecond level)</li>
+     *   <li>Async email submission (no waiting)</li>
+     *   <li>No database transactions</li>
+     *   <li>No network calls in this thread</li>
+     * </ul>
+     *
+     * @param event the logging event
+     */
+    @Override
+    protected void append(ILoggingEvent event) {
+        // Fast path checks - ordered by likelihood and cost
+
+        // 1. Only ERROR level
+        if (event == null || event.getLevel() != Level.ERROR) {
+            return;
+        }
+
+        // 2. Check if email notifications are enabled
+        if (!isEmailNotificationEnabled()) {
+            return;
+        }
+
+        // 3. Prevent infinite loop - check logger name
+        if (isExcludedLogger(event.getLoggerName())) {
+            return;
+        }
+
+        // 4. Circuit breaker check
+        if (isCircuitBreakerOpen()) {
+            return;
+        }
+
+        // 5. Rate limiting
+        if (!tryAcquireRateLimit()) {
+            return;
+        }
+
+        // 6. Get recipient email (cached)
+        String recipient = getRecipientEmail();
+        if (recipient == null) {
+            return;
+        }
+
+        // 7. Check EmailService availability (cached lookup)
+        EmailService emailService = getEmailServiceCached();
+        if (emailService == null) {
+            return;
+        }
+
+        // All checks passed - submit async email task (non-blocking)
+        submitEmailTask(emailService, recipient, event);
+    }
+
+    /**
+     * Check if email notifications are enabled via configuration.
+     *
+     * @return true if enabled
+     */
+    private static boolean isEmailNotificationEnabled() {
+        String enabled = System.getProperty(PROPERTY_ENABLED);
+        if (enabled == null) {
+            enabled = System.getenv(ENV_ENABLED);
+        }
+        // Default to enabled if not specified
+        return enabled == null || !"false".equalsIgnoreCase(enabled.trim());
+    }
+
+    /**
+     * Check if this logger should be excluded to prevent infinite loops.
+     *
+     * @param loggerName the logger name
+     * @return true if should be excluded
+     */
+    private static boolean isExcludedLogger(String loggerName) {
+        if (loggerName == null) {
+            return false;
+        }
+        for (String prefix : EXCLUDED_LOGGER_PREFIXES) {
+            if (loggerName.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Check if circuit breaker is open (too many failures).
+     * Auto-reset after timeout period.
+     *
+     * @return true if circuit breaker is open (emails disabled)
+     */
+    private static boolean isCircuitBreakerOpen() {
+        CircuitBreakerState state = CIRCUIT_BREAKER_STATE.get();
+
+        if (!state.isOpen()) {
+            return false;
+        }
+
+        // Check if we should reset (half-open state)
+        long now = System.currentTimeMillis();
+        if (now - state.openedAt() > CIRCUIT_BREAKER_RESET_TIME_MS) {
+            // Try to reset - use CAS to prevent race condition
+            CircuitBreakerState newState = CircuitBreakerState.closed();
+            if (CIRCUIT_BREAKER_STATE.compareAndSet(state, newState)) {
+                logInternal("Circuit breaker reset - email notifications re-enabled");
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Rate limiting using atomic compare-and-set.
+     * Prevents email flooding while being thread-safe.
+     *
+     * @return true if rate limit acquired (email can be sent)
+     */
+    private static boolean tryAcquireRateLimit() {
+        long now = System.currentTimeMillis();
+        long last;
+
+        do {
+            last = LAST_EMAIL_TIME.get();
+            if (now - last < MIN_EMAIL_INTERVAL_MS) {
+                return false; // Too soon, skip this email
+            }
+        } while (!LAST_EMAIL_TIME.compareAndSet(last, now));
+
+        return true;
+    }
+
+    /**
+     * Get recipient email address from configuration.
+     * Result is cached after first evaluation.
+     *
+     * @return recipient email address or null if not configured
+     */
+    private static String getRecipientEmail() {
+        // Fast path - already evaluated
+        if (recipientEvaluated) {
+            return cachedRecipientEmail;
+        }
+
+        synchronized (EmailErrorAppender.class) {
+            if (!recipientEvaluated) {
+                String recipient = System.getProperty(PROPERTY_RECIPIENT);
+                if (recipient == null || recipient.isBlank()) {
+                    recipient = System.getenv(ENV_RECIPIENT);
+                }
+
+                if (recipient == null || recipient.isBlank()) {
+                    logInternal("WARNING: " + ENV_RECIPIENT + " not configured - email error notifications DISABLED.  " +
+                            "Set environment variable or system property to enable.");
+                    cachedRecipientEmail = null;
+                } else {
+                    cachedRecipientEmail = recipient.trim();
+                    logInternal("Email error notifications will be sent to: " + cachedRecipientEmail);
+                }
+                recipientEvaluated = true;
+            }
+        }
+
+        return cachedRecipientEmail;
+    }
+
+    /**
+     * Get EmailService bean from cache or Spring context.
+     * Thread-safe with double-checked locking.
+     *
+     * @return EmailService instance or null if not available
+     */
+    private static EmailService getEmailServiceCached() {
+        // Fast path:  Return cached bean
+        EmailService service = cachedEmailService;
+        if (service != null) {
+            return service;
+        }
+
+        // Fast path: Already failed, don't retry
+        if (beanLookupFailed) {
+            return null;
+        }
+
+        // Slow path: Lookup from Spring context
+        ApplicationContext ctx = applicationContext;
+        if (ctx == null) {
+            return null;
+        }
+
+        synchronized (EmailErrorAppender.class) {
+            // Double-check after acquiring lock
+            if (cachedEmailService != null) {
+                return cachedEmailService;
+            }
+
+            if (beanLookupFailed) {
+                return null;
+            }
+
+            try {
+                cachedEmailService = ctx.getBean(EmailService.class);
+                logInternal("EmailService bean cached successfully");
+                return cachedEmailService;
+            } catch (Exception e) {
+                beanLookupFailed = true;
+                logInternal("Failed to get EmailService bean: " + e.getMessage() +
+                        " - Email error notifications DISABLED");
+                return null;
+            }
+        }
+    }
+
+    /**
+     * Submit email task to the thread pool.
+     * This method never blocks.
+     *
+     * @param emailService the email service
+     * @param recipient    recipient email address
+     * @param event        the logging event
+     */
+    private void submitEmailTask(EmailService emailService, String recipient, ILoggingEvent event) {
+        try {
+            // Build email content in the calling thread (fast, CPU-only)
+            String subject = buildSubject(event);
+            String body = buildBody(event);
+
+            // Submit to bounded thread pool (never blocks - uses discard policy if full)
+            EMAIL_EXECUTOR.submit(() -> sendEmailSafely(emailService, recipient, subject, body));
+
+        } catch (RejectedExecutionException e) {
+            // Thread pool is full and queue is full - this is OK, just drop the email
+            // Logging here would cause recursion, so we silently drop
+        } catch (Exception e) {
+            // Catch-all for safety - should never happen
+            System.err.println("EmailErrorAppender:  Unexpected error during email submission: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Send email with error handling and circuit breaker logic.
+     * This runs in a separate thread pool - NEVER in application threads.
+     *
+     * @param emailService the email service
+     * @param recipient    recipient email address
+     * @param subject      email subject
+     * @param body         email body
+     */
+    private static void sendEmailSafely(EmailService emailService, String recipient, String subject, String body) {
+        try {
+            emailService.sendEmail(recipient, subject, body);
+
+            // Success - ensure circuit breaker is closed
+            CircuitBreakerState currentState = CIRCUIT_BREAKER_STATE.get();
+            if (currentState.failureCount() > 0) {
+                CIRCUIT_BREAKER_STATE.set(CircuitBreakerState.closed());
+            }
+
+        } catch (Exception e) {
+            handleEmailFailure(e);
+        }
+    }
+
+    /**
+     * Handle email sending failure - update circuit breaker state.
+     *
+     * @param e the exception
+     */
+    private static void handleEmailFailure(Exception e) {
+        CircuitBreakerState currentState;
+        CircuitBreakerState newState;
+
+        do {
+            currentState = CIRCUIT_BREAKER_STATE.get();
+            int newFailureCount = currentState.failureCount() + 1;
+
+            if (newFailureCount >= CIRCUIT_BREAKER_FAILURE_THRESHOLD) {
+                // Open circuit breaker
+                newState = CircuitBreakerState.open(System.currentTimeMillis(), newFailureCount);
+                logInternal("Circuit breaker OPENED after " + newFailureCount +
+                        " consecutive failures.  Email notifications disabled for " +
+                        (CIRCUIT_BREAKER_RESET_TIME_MS / 1000) + " seconds.  Last error: " + e.getMessage());
+            } else {
+                // Increment failure count
+                newState = CircuitBreakerState.withFailures(newFailureCount);
+                logInternal("Email send failed (" + newFailureCount + "/" + CIRCUIT_BREAKER_FAILURE_THRESHOLD +
+                        " failures): " + e.getMessage());
+            }
+        } while (!CIRCUIT_BREAKER_STATE.compareAndSet(currentState, newState));
+    }
+
+    /**
+     * Build email subject from logging event.
+     *
+     * @param event the logging event
+     * @return formatted subject
+     */
+    private static String buildSubject(ILoggingEvent event) {
+        String loggerName = event.getLoggerName();
+        String className = extractSimpleClassName(loggerName);
+        String timestamp = LocalDateTime.now().format(FORMATTER);
+
+        // Include exception type if available
+        String exceptionInfo = "";
+        if (event.getThrowableProxy() != null) {
+            String exceptionClass = event.getThrowableProxy().getClassName();
+            exceptionInfo = " - " + extractSimpleClassName(exceptionClass);
+        }
+
+        return String.format("[ERROR] %s%s - %s", className, exceptionInfo, timestamp);
+    }
+
+    /**
+     * Extract simple class name from fully qualified name.
+     *
+     * @param fullyQualifiedName the fully qualified class name
+     * @return simple class name
+     */
+    private static String extractSimpleClassName(String fullyQualifiedName) {
+        if (fullyQualifiedName == null) {
+            return "Unknown";
+        }
+        int lastDot = fullyQualifiedName.lastIndexOf('.');
+        if (lastDot > 0 && lastDot < fullyQualifiedName.length() - 1) {
+            return fullyQualifiedName.substring(lastDot + 1);
+        }
+        return fullyQualifiedName;
+    }
+
+    /**
+     * Build email body with comprehensive error information.
+     *
+     * @param event the logging event
+     * @return formatted body
+     */
+    private static String buildBody(ILoggingEvent event) {
+        StringBuilder body = new StringBuilder(2048);
+
+        body.append("════════════════════════════════════════════════════════════════\n");
+        body.append("                         ERROR LOG DETAILS                       \n");
+        body.append("════════════════════════════════════════════════════════════════\n\n");
+
+        // Basic info
+        body.append("📅 Timestamp  : ").append(LocalDateTime.now().format(FORMATTER)).append("\n");
+        body.append("📝 Logger     : ").append(event.getLoggerName()).append("\n");
+        body.append("⚠️  Level      : ").append(event.getLevel()).append("\n");
+        body.append("🧵 Thread     : ").append(event.getThreadName()).append("\n");
+
+        // Application info
+        appendApplicationInfo(body);
+
+        // Error message
+        body.append("\n────────────────────────────────────────────────────────────────\n");
+        body.append("                           ERROR MESSAGE                         \n");
+        body.append("────────────────────────────────────────────────────────────────\n\n");
+        body.append(event.getFormattedMessage()).append("\n");
+
+        // Stack trace (if available)
+        if (event.getThrowableProxy() != null) {
+            body.append("\n────────────────────────────────────────────────────────────────\n");
+            body.append("                           STACK TRACE                           \n");
+            body.append("────────────────────────────────────────────────────────────────\n\n");
+            appendThrowableProxy(body, event.getThrowableProxy(), 0);
+        }
+
+        // MDC context
+        if (event.getMDCPropertyMap() != null && !event.getMDCPropertyMap().isEmpty()) {
+            body.append("\n────────────────────────────────────────────────────────────────\n");
+            body.append("                         CONTEXT (MDC)                           \n");
+            body.append("────────────────────────────────────────────────────────────────\n\n");
+            event.getMDCPropertyMap().forEach((key, value) ->
+                    body.append("  • ").append(key).append(": ").append(value).append("\n")
+            );
+        }
+
+        body.append("\n════════════════════════════════════════════════════════════════\n");
+        body.append("                         END OF ERROR LOG                        \n");
+        body.append("════════════════════════════════════════════════════════════════\n");
+
+        return body.toString();
+    }
+
+    /**
+     * Append application/environment information to the body.
+     *
+     * @param body the string builder
+     */
+    private static void appendApplicationInfo(StringBuilder body) {
+        body.append("\n📊 Environment:\n");
+
+        String appName = System.getProperty("spring.application.name", "N/A");
+        body.append("  • Application :  ").append(appName).append("\n");
+
+        String profile = System.getProperty("spring.profiles. active",
+                System.getenv().getOrDefault("SPRING_PROFILES_ACTIVE", "N/A"));
+        body.append("  • Profile     : ").append(profile).append("\n");
+
+        String hostname = System.getenv().getOrDefault("HOSTNAME",
+                System.getProperty("hostname", "N/A"));
+        body.append("  • Hostname    : ").append(hostname).append("\n");
+
+        String podName = System.getenv().getOrDefault("POD_NAME", "N/A");
+        if (!"N/A".equals(podName)) {
+            body.append("  • Pod Name    : ").append(podName).append("\n");
+        }
+    }
+
+    /**
+     * Append throwable proxy to the body with full stack trace.
+     * Handles the caused-by chain recursively.
+     *
+     * @param body           the string builder
+     * @param throwableProxy the throwable proxy
+     * @param causeDepth     current depth in the cause chain
+     */
+    private static void appendThrowableProxy(StringBuilder body, IThrowableProxy throwableProxy, int causeDepth) {
+        if (throwableProxy == null || causeDepth > MAX_CAUSE_DEPTH) {
+            if (causeDepth > MAX_CAUSE_DEPTH) {
+                body.append("  ...  (cause chain truncated after ").append(MAX_CAUSE_DEPTH).append(" levels)\n");
+            }
+            return;
+        }
+
+        // Exception class and message
+        if (causeDepth == 0) {
+            body.append(throwableProxy.getClassName());
+        } else {
+            body.append("Caused by: ").append(throwableProxy.getClassName());
+        }
+
+        if (throwableProxy.getMessage() != null) {
+            body.append(": ").append(throwableProxy.getMessage());
+        }
+        body.append("\n");
+
+        // Stack trace elements
+        StackTraceElementProxy[] stackTrace = throwableProxy.getStackTraceElementProxyArray();
+        if (stackTrace != null) {
+            int limit = Math.min(stackTrace.length, MAX_STACK_TRACE_DEPTH);
+            for (int i = 0; i < limit; i++) {
+                body.append("\tat ").append(stackTrace[i].getSTEAsString()).append("\n");
+            }
+            if (stackTrace.length > MAX_STACK_TRACE_DEPTH) {
+                body.append("\t... ").append(stackTrace.length - MAX_STACK_TRACE_DEPTH).append(" more\n");
+            }
+        }
+
+        // Common frames info
+        int commonFrames = throwableProxy.getCommonFrames();
+        if (commonFrames > 0) {
+            body.append("\t... ").append(commonFrames).append(" common frames omitted\n");
+        }
+
+        // Suppressed exceptions
+        IThrowableProxy[] suppressed = throwableProxy.getSuppressed();
+        if (suppressed != null) {
+            for (IThrowableProxy suppressedEx : suppressed) {
+                body.append("Suppressed: ");
+                appendThrowableProxy(body, suppressedEx, causeDepth + 1);
+            }
+        }
+
+        // Recurse into cause
+        if (throwableProxy.getCause() != null) {
+            appendThrowableProxy(body, throwableProxy.getCause(), causeDepth + 1);
+        }
+    }
+
+    /**
+     * Internal logging that writes to stderr to avoid recursion.
+     *
+     * @param message the message to log
+     */
+    private static void logInternal(String message) {
+        System.out.println("[EmailErrorAppender] " + LocalDateTime.now().format(FORMATTER) + " - " + message);
+    }
+
+    @Override
+    public void setApplicationContext(@NonNull ApplicationContext context) {
+        applicationContext = context;
+        // Clear caches when context changes (e.g., in tests)
+        cachedEmailService = null;
+        beanLookupFailed = false;
+        cachedRecipientEmail = null;
+        recipientEvaluated = false;
+    }
+
+    /**
+     * Shutdown hook to gracefully stop email executor on application shutdown.
+     * Waits for pending emails to be sent before completing shutdown.
+     */
+    @Override
+    public void stop() {
+        super.stop();
+        try {
+            logInternal("Shutting down email executor.. .");
+            EMAIL_EXECUTOR.shutdown();
+            if (!EMAIL_EXECUTOR.awaitTermination(10, TimeUnit.SECONDS)) {
+                logInternal("Forcing shutdown of email executor after timeout");
+                EMAIL_EXECUTOR.shutdownNow();
+                if (!EMAIL_EXECUTOR.awaitTermination(5, TimeUnit.SECONDS)) {
+                    logInternal("Email executor did not terminate gracefully");
+                }
+            } else {
+                logInternal("Email executor shut down successfully");
+            }
+        } catch (InterruptedException e) {
+            EMAIL_EXECUTOR.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Reset all static state.  Used primarily for testing.
+     */
+    public static void resetForTesting() {
+        applicationContext = null;
+        cachedEmailService = null;
+        beanLookupFailed = false;
+        cachedRecipientEmail = null;
+        recipientEvaluated = false;
+        CIRCUIT_BREAKER_STATE.set(CircuitBreakerState.closed());
+        LAST_EMAIL_TIME.set(0);
+    }
+
+    /**
+     * Immutable circuit breaker state record.
+     * Using a record ensures thread-safe atomic updates via AtomicReference.
+     */
+    private record CircuitBreakerState(boolean isOpen, long openedAt, int failureCount) {
+
+        static CircuitBreakerState closed() {
+            return new CircuitBreakerState(false, 0, 0);
+        }
+
+        static CircuitBreakerState open(long openedAt, int failureCount) {
+            return new CircuitBreakerState(true, openedAt, failureCount);
+        }
+
+        static CircuitBreakerState withFailures(int failureCount) {
+            return new CircuitBreakerState(false, 0, failureCount);
+        }
+    }
+}
