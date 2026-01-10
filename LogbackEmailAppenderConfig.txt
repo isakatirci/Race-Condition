@@ -1,4 +1,4 @@
-package com.ykb.cosmos.swift.moneytransfer.logging;
+package com.example.demo;
 
 import ch.qos.logback.classic.AsyncAppender;
 import ch.qos.logback.classic.Logger;
