@@ -1,11 +1,10 @@
-package com.ykb.cosmos.swift.moneytransfer.logging;
+package com.example.demo;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.IThrowableProxy;
 import ch.qos.logback.classic.spi.StackTraceElementProxy;
 import ch.qos.logback.core.AppenderBase;
-import com.ykb.cosmos.swift.moneytransfer.external.email.service.EmailService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationContext;
@@ -28,7 +27,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Custom Logback appender that intercepts ERROR level logs and sends them via email.
- * This appender listens to all SLF4J Logger. error() calls and forwards them to EmailService.
+ * This appender listens to all SLF4J Logger.error() calls and forwards them to EmailService.
  *
  * <p><b>Performance & Safety Features:</b>
  * <ul>
@@ -44,8 +43,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p><b>Configuration:</b>
  * <pre>
  * Environment Variables:
- *   - ERROR_EMAIL_RECIPIENT: Required.  Email address for error notifications.
- *   - ERROR_EMAIL_ENABLED: Optional. Set to "false" to disable.  Default: true.
+ *   - ERROR_EMAIL_RECIPIENT: Required. Email address for error notifications.
+ *   - ERROR_EMAIL_ENABLED: Optional. Set to "false" to disable. Default: true.
  *
  * System Properties:
  *   - error.email.recipient: Alternative to environment variable.
@@ -56,7 +55,6 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * @author YKB Swift Team
  * @version 2.0.0
- * @see EmailService#sendEmail(String, String, String)
  */
 @Component
 public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements ApplicationContextAware {
@@ -65,15 +63,15 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
     private static final Logger INTERNAL_LOGGER = LoggerFactory.getLogger(EmailErrorAppender.class);
 
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final String PROPERTY_RECIPIENT = "error. email.recipient";
+    private static final String PROPERTY_RECIPIENT = "error.email.recipient";
     private static final String ENV_RECIPIENT = "ERROR_EMAIL_RECIPIENT";
     private static final String PROPERTY_ENABLED = "error.email.enabled";
     private static final String ENV_ENABLED = "ERROR_EMAIL_ENABLED";
 
     // Logger names to exclude to prevent infinite loops
     private static final Set<String> EXCLUDED_LOGGER_PREFIXES = Set.of(
-            "com.ykb. cosmos.swift.moneytransfer. external.email",
-            "com.ykb. cosmos.swift.moneytransfer. logging",
+            "com.ykb.cosmos.swift.moneytransfer.external.email",
+            "com.ykb.cosmos.swift.moneytransfer.logging",
             "org.springframework.mail",
             "com.sun.mail",
             "javax.mail"
@@ -93,7 +91,8 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
     private static volatile boolean recipientEvaluated = false;
 
     // Thread pool for async email sending - bounded to prevent resource exhaustion
-    private static final ExecutorService EMAIL_EXECUTOR = createEmailExecutor();
+    // Not final to allow resetting in tests
+    private static ExecutorService emailExecutor = createEmailExecutor();
 
     // Circuit breaker state - using AtomicReference for atomic state updates
     private static final AtomicReference<CircuitBreakerState> CIRCUIT_BREAKER_STATE =
@@ -126,7 +125,7 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
                 thread.setDaemon(true); // Daemon thread - won't prevent JVM shutdown
                 thread.setPriority(Thread.MIN_PRIORITY); // Low priority - don't impact app performance
                 thread.setUncaughtExceptionHandler((t, e) ->
-                        System.err.println("EmailErrorAppender:  Uncaught exception in " + t.getName() + ": " + e.getMessage())
+                        System.err.println("EmailErrorAppender: Uncaught exception in " + t.getName() + ": " + e.getMessage())
                 );
                 return thread;
             }
@@ -143,9 +142,9 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
     }
 
     /**
-     * Process each logging event.  Only ERROR level logs are sent via email.
+     * Process each logging event. Only ERROR level logs are sent via email.
      *
-     * <p><b>CRITICAL:  This method NEVER blocks. </b> All operations are:
+     * <p><b>CRITICAL: This method NEVER blocks.</b> All operations are:
      * <ul>
      *   <li>Fast pre-checks (nanosecond level)</li>
      *   <li>Async email submission (no waiting)</li>
@@ -209,6 +208,10 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
         String enabled = System.getProperty(PROPERTY_ENABLED);
         if (enabled == null) {
             enabled = System.getenv(ENV_ENABLED);
+        }
+        // Check Spring Environment if available
+        if (enabled == null && applicationContext != null) {
+            enabled = applicationContext.getEnvironment().getProperty(PROPERTY_ENABLED);
         }
         // Default to enabled if not specified
         return enabled == null || !"false".equalsIgnoreCase(enabled.trim());
@@ -297,10 +300,15 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
                 if (recipient == null || recipient.isBlank()) {
                     recipient = System.getenv(ENV_RECIPIENT);
                 }
+                
+                // Check Spring Environment if available
+                if ((recipient == null || recipient.isBlank()) && applicationContext != null) {
+                    recipient = applicationContext.getEnvironment().getProperty(PROPERTY_RECIPIENT);
+                }
 
                 if (recipient == null || recipient.isBlank()) {
-                    logInternal("WARNING: " + ENV_RECIPIENT + " not configured - email error notifications DISABLED.  " +
-                            "Set environment variable or system property to enable.");
+                    logInternal("WARNING: " + ENV_RECIPIENT + " not configured - email error notifications DISABLED. " +
+                            "Set environment variable, system property, or application.property to enable.");
                     cachedRecipientEmail = null;
                 } else {
                     cachedRecipientEmail = recipient.trim();
@@ -320,7 +328,7 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
      * @return EmailService instance or null if not available
      */
     private static EmailService getEmailServiceCached() {
-        // Fast path:  Return cached bean
+        // Fast path: Return cached bean
         EmailService service = cachedEmailService;
         if (service != null) {
             return service;
@@ -375,14 +383,19 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
             String body = buildBody(event);
 
             // Submit to bounded thread pool (never blocks - uses discard policy if full)
-            EMAIL_EXECUTOR.submit(() -> sendEmailSafely(emailService, recipient, subject, body));
+            ExecutorService executor = emailExecutor;
+            if (executor != null && !executor.isShutdown()) {
+                executor.submit(() -> sendEmailSafely(emailService, recipient, subject, body));
+            } else {
+                // Fallback or log if executor is down (e.g. during shutdown)
+            }
 
         } catch (RejectedExecutionException e) {
             // Thread pool is full and queue is full - this is OK, just drop the email
             // Logging here would cause recursion, so we silently drop
         } catch (Exception e) {
             // Catch-all for safety - should never happen
-            System.err.println("EmailErrorAppender:  Unexpected error during email submission: " + e.getMessage());
+            System.err.println("EmailErrorAppender: Unexpected error during email submission: " + e.getMessage());
         }
     }
 
@@ -427,8 +440,8 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
                 // Open circuit breaker
                 newState = CircuitBreakerState.open(System.currentTimeMillis(), newFailureCount);
                 logInternal("Circuit breaker OPENED after " + newFailureCount +
-                        " consecutive failures.  Email notifications disabled for " +
-                        (CIRCUIT_BREAKER_RESET_TIME_MS / 1000) + " seconds.  Last error: " + e.getMessage());
+                        " consecutive failures. Email notifications disabled for " +
+                        (CIRCUIT_BREAKER_RESET_TIME_MS / 1000) + " seconds. Last error: " + e.getMessage());
             } else {
                 // Increment failure count
                 newState = CircuitBreakerState.withFailures(newFailureCount);
@@ -540,7 +553,7 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
         String appName = System.getProperty("spring.application.name", "N/A");
         body.append("  • Application :  ").append(appName).append("\n");
 
-        String profile = System.getProperty("spring.profiles. active",
+        String profile = System.getProperty("spring.profiles.active",
                 System.getenv().getOrDefault("SPRING_PROFILES_ACTIVE", "N/A"));
         body.append("  • Profile     : ").append(profile).append("\n");
 
@@ -565,7 +578,7 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
     private static void appendThrowableProxy(StringBuilder body, IThrowableProxy throwableProxy, int causeDepth) {
         if (throwableProxy == null || causeDepth > MAX_CAUSE_DEPTH) {
             if (causeDepth > MAX_CAUSE_DEPTH) {
-                body.append("  ...  (cause chain truncated after ").append(MAX_CAUSE_DEPTH).append(" levels)\n");
+                body.append("  ...(cause chain truncated after ").append(MAX_CAUSE_DEPTH).append(" levels)\n");
             }
             return;
         }
@@ -590,14 +603,14 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
                 body.append("\tat ").append(stackTrace[i].getSTEAsString()).append("\n");
             }
             if (stackTrace.length > MAX_STACK_TRACE_DEPTH) {
-                body.append("\t... ").append(stackTrace.length - MAX_STACK_TRACE_DEPTH).append(" more\n");
+                body.append("\t...").append(stackTrace.length - MAX_STACK_TRACE_DEPTH).append(" more\n");
             }
         }
 
         // Common frames info
         int commonFrames = throwableProxy.getCommonFrames();
         if (commonFrames > 0) {
-            body.append("\t... ").append(commonFrames).append(" common frames omitted\n");
+            body.append("\t...").append(commonFrames).append(" common frames omitted\n");
         }
 
         // Suppressed exceptions
@@ -642,25 +655,27 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
     public void stop() {
         super.stop();
         try {
-            logInternal("Shutting down email executor.. .");
-            EMAIL_EXECUTOR.shutdown();
-            if (!EMAIL_EXECUTOR.awaitTermination(10, TimeUnit.SECONDS)) {
-                logInternal("Forcing shutdown of email executor after timeout");
-                EMAIL_EXECUTOR.shutdownNow();
-                if (!EMAIL_EXECUTOR.awaitTermination(5, TimeUnit.SECONDS)) {
-                    logInternal("Email executor did not terminate gracefully");
+            if (emailExecutor != null && !emailExecutor.isShutdown()) {
+                logInternal("Shutting down email executor...");
+                emailExecutor.shutdown();
+                if (!emailExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                    logInternal("Forcing shutdown of email executor after timeout");
+                    emailExecutor.shutdownNow();
+                    if (!emailExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        logInternal("Email executor did not terminate gracefully");
+                    }
+                } else {
+                    logInternal("Email executor shut down successfully");
                 }
-            } else {
-                logInternal("Email executor shut down successfully");
             }
         } catch (InterruptedException e) {
-            EMAIL_EXECUTOR.shutdownNow();
+            if (emailExecutor != null) emailExecutor.shutdownNow();
             Thread.currentThread().interrupt();
         }
     }
 
     /**
-     * Reset all static state.  Used primarily for testing.
+     * Reset all static state. Used primarily for testing.
      */
     public static void resetForTesting() {
         applicationContext = null;
@@ -670,6 +685,11 @@ public class EmailErrorAppender extends AppenderBase<ILoggingEvent> implements A
         recipientEvaluated = false;
         CIRCUIT_BREAKER_STATE.set(CircuitBreakerState.closed());
         LAST_EMAIL_TIME.set(0);
+        
+        // Re-create executor if it was shut down
+        if (emailExecutor == null || emailExecutor.isShutdown()) {
+            emailExecutor = createEmailExecutor();
+        }
     }
 
     /**
